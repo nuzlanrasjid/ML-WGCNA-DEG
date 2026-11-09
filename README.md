@@ -1,4 +1,4 @@
-# ML-WGCNA-DEG
+# WGCNA-DEG-ML
 
 Feature selection by intersecting WGCNA modules with differentially
 expressed genes, followed by machine learning on METABRIC breast cancer
