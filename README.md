@@ -12,11 +12,7 @@ This repository contains the code only. Raw data is not included.
 ML-WGCNA-DEG/
 ├── data/
 │   └── input/                      # put METABRIC_RNA_Mutation.csv here (not tracked)
-├── scripts/
-│   ├── 01_wgcna.R
-│   ├── 02_dge_basal_vs_rest.py
-│   ├── 03_overlap.py
-│   └── 04_ml_shap_n42.py
+├── wgcna-dge-ml-workflow-script
 ├── outputs/
 │   ├── 01_wgcna/                   # gene-module table
 │   ├── 02_dge/                     # DEG table
