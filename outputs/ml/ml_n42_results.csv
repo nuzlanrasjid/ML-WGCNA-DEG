@@ -1,0 +1,4 @@
+model,balanced_accuracy,null_mean,null_std,p_perm,n_perm,n_samples,n_features
+RF,0.75,0.501,0.012,0.0196,50,42,79
+XGB,0.722,0.493,0.097,0.0588,50,42,79
+SVM,0.667,0.49,0.036,0.0196,50,42,79
