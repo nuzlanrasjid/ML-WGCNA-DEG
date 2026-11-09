@@ -1,6 +1,4 @@
 # ML-WGCNA-DEG
-Combination of WGNA and DEG to train cancer dataset on ML
-# ML-WGCNA-DEG
 
 Feature selection by intersecting WGCNA modules with differentially
 expressed genes, followed by machine learning on METABRIC breast cancer
@@ -8,23 +6,51 @@ data (Basal vs non-Basal).
 
 This repository contains the code only. Raw data is not included.
 
+## Repository structure
+
+```
+ML-WGCNA-DEG/
+├── data/
+│   └── input/                      # put METABRIC_RNA_Mutation.csv here (not tracked)
+├── scripts/
+│   ├── 01_wgcna.R
+│   ├── 02_dge_basal_vs_rest.py
+│   ├── 03_overlap.py
+│   └── 04_ml_shap_n42.py
+├── outputs/
+│   ├── 01_wgcna/                   # gene-module table
+│   ├── 02_dge/                     # DEG table
+│   ├── 03_overlap/                 # DEG x WGCNA overlap
+│   └── 04_ml/
+│       ├── tables/                 # model metrics, SHAP tables
+│       └── figures/                # SHAP plots
+├── requirements.txt
+├── R_sessionInfo.txt
+├── .gitignore
+├── LICENSE
+└── README.md
+```
+
+`data/input/` holds raw data only and is never modified by the scripts.
+Everything the scripts generate goes to `outputs/`, one subfolder per step.
+Each step reads the previous step's files from `outputs/`.
+
 ## Pipeline
 
 | # | Script | Language | Input | Output |
 |---|--------|----------|-------|--------|
-| 1 | `scripts/01_wgcna.R` | R | `METABRIC_RNA_Mutation.csv` | `metabric_gene_modules_R.csv` |
-| 2 | `scripts/02_dge_basal_vs_rest.py` | Python | `METABRIC_RNA_Mutation.csv` | DEG table (CSV) |
-| 3 | `scripts/03_overlap.py` | Python | module table + DEG table | `deg_wgcna_overlap.csv` |
-| 4 | `scripts/04_ml_shap_n42.py` | Python | the three files above | `ml_n42_results.csv`, SHAP tables and plots |
+| 1 | `scripts/01_wgcna.R` | R | `data/input/METABRIC_RNA_Mutation.csv` | `outputs/01_wgcna/metabric_gene_modules_R.csv` |
+| 2 | `scripts/02_dge_basal_vs_rest.py` | Python | `data/input/METABRIC_RNA_Mutation.csv` | `outputs/02_dge/deg_basal_vs_rest.csv` |
+| 3 | `scripts/03_overlap.py` | Python | module table + DEG table | `outputs/03_overlap/deg_wgcna_overlap.csv` |
+| 4 | `scripts/04_ml_shap_n42.py` | Python | raw CSV + the two tables above + overlap | `outputs/04_ml/` (tables and figures) |
 
 Run the steps in order. Step 1 runs once, globally, on all samples.
 
 ## Dataset
 
-METABRIC expression and clinical data (Curtis et al., 2012, *Nature*
-486:346-352), accessed through a Kaggle re-upload. Download
-`METABRIC_RNA_Mutation.csv` yourself and place it in your working
-folder. The PAM50 label used for classification is the column
+METABRIC expression and clinical data ( (Pereira et al., 2016, *Nature*), 
+accessed through a Kaggle re-upload. Download `METABRIC_RNA_Mutation.csv` 
+yourself from this link ![Kaggle](https://www.kaggle.com/datasets/raghadalharbi/breast-cancer-gene-expression-profiles-metabric) and place it in `data/input/`. The PAM50 label used for classification is the column
 `pam50_+_claudin-low_subtype`.
 
 ## Requirements
@@ -50,8 +76,10 @@ in `R_sessionInfo.txt`.
 
 The scripts were written for Google Colab with files on Google Drive.
 
-1. Put the input CSV files in one Drive folder.
-2. Set `BASE_DIR` at the top of each Python script to that folder.
+1. Copy the repository folder to Drive and put the raw CSV in `data/input/`.
+2. Set `BASE_DIR` at the top of each script to the repository root. Input
+   and output paths are derived from it:
+   `INPUT_DIR = BASE_DIR/data/input`, `OUTPUT_DIR = BASE_DIR/outputs/<step>`.
 3. Run step 1 in R, then steps 2 to 4 in Python.
 
 Settings at the top of `04_ml_shap_n42.py`:
@@ -80,24 +108,14 @@ Settings at the top of `04_ml_shap_n42.py`:
 
 | File | Content |
 |------|---------|
-| `ml_n42_results.csv` | Balanced accuracy, null mean and std, permutation p-value per model |
-| `shap_importance_RF.csv`, `shap_importance_XGB.csv` | Mean abs SHAP per gene |
-| `shap_consensus_genes.csv` | Genes in the top 15 of both models |
-| `shap_bar_basal_vs_rest.png` | Bar plot of mean abs SHAP, coloured by direction |
-| `shap_beeswarm_rf.png` | SHAP beeswarm for Random Forest |
-
-## Repository structure
-
-```
-ML-WGCNA-DEG/
-├── scripts/
-├── results/
-├── requirements.txt
-├── R_sessionInfo.txt
-├── .gitignore
-├── LICENSE
-└── README.md
-```
+| `outputs/01_wgcna/metabric_gene_modules_R.csv` | Gene-to-module assignment |
+| `outputs/02_dge/deg_basal_vs_rest.csv` | Differential expression, Basal vs rest |
+| `outputs/03_overlap/deg_wgcna_overlap.csv` | Genes in both DEG list and WGCNA modules |
+| `outputs/04_ml/tables/ml_n42_results.csv` | Balanced accuracy, null mean and std, permutation p-value per model |
+| `outputs/04_ml/tables/shap_importance_RF.csv`, `shap_importance_XGB.csv` | Mean abs SHAP per gene |
+| `outputs/04_ml/tables/shap_consensus_genes.csv` | Genes in the top 15 of both models |
+| `outputs/04_ml/figures/shap_bar_basal_vs_rest.png` | Bar plot of mean abs SHAP, coloured by direction |
+| `outputs/04_ml/figures/shap_beeswarm_rf.png` | SHAP beeswarm for Random Forest |
 
 ## Notes
 
