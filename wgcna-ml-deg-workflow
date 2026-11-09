@@ -1,52 +1,16 @@
-################################################################################
 # METABRIC Basal vs non-Basal: WGCNA (global) + DGE -> intersection -> ML
-#
-# ONE route only (the original plan):
-#   1. [R]       WGCNA on all 489 genes            -> metabric_gene_modules_R.csv
-#   2. [PYTHON]  DGE Basal vs non-Basal            -> dge_basal_vs_rest_*.csv
-#   3. [PYTHON]  Intersection DEG x WGCNA modules  -> deg_wgcna_overlap.csv
-#   4. [PYTHON]  ML on overlap genes (RF, XGBoost, SVM), n=42,
-#                nested LOOCV + permutation test, then SHAP
-#
-# Dropped on purpose: re-running WGCNA on the DEGs (wgcna_on_deg_basal.R) and
-# the key-gene filter from it. It answered a different question and doubled
-# the WGCNA work.
-#
-# Runtimes: Colab R runtime and Colab Python runtime do NOT share variables.
-# Files move between them through Google Drive (folder "Latihan WGCNA"):
-# download the CSVs written by R from /content and upload them to that folder.
-#
-# STATUS: steps 1-3 were already run. If their CSV outputs exist in Drive,
-# you can go straight to step 4 in a new session: its block 4.0 reloads
-# everything from Drive (needs deg_wgcna_overlap.csv from step 3).
-################################################################################
+# STEP 1--[R RUNTIME] WGCNA on all genes
 
-
-################################################################################
-# STEP 1 -- [R RUNTIME] WGCNA on all genes            (ALREADY RUN)
-# Input : /content/METABRIC_RNA_Mutation.csv
-# Output: /content/metabric_gene_modules_R.csv  (upload to Drive afterwards)
-################################################################################
-
-# ---- [R] install + load (once per runtime) ----
-if (!require("BiocManager", quietly = TRUE)) install.packages("BiocManager")
-BiocManager::install("WGCNA", update = FALSE, ask = FALSE)
-install.packages("fastDummies")
-
+##  Load libraries
 library(WGCNA)
 library(fastDummies)
 
-# ---- [R] load data ----
-# ROOT CAUSE of the 'hla.g' KeyError: read.csv() has check.names = TRUE by default, so R
-# rewrites gene names that are not valid R names ('hla-g' -> 'hla.g'). Every table
-# exported from here on (metabric_gene_modules_R.csv) carries the rewritten names, while
-# Python reads the original ones. Python fixes this with restore_gene_names() in step 2.
-# (Alternative: read.csv(..., check.names = FALSE), but that needs re-running this whole step.)
+# load data 
 df <- read.csv("/content/METABRIC_RNA_Mutation.csv")
 dim(df)
 
-# ---- [R] split columns: mutation / clinical / gene ----
-# read.csv mangles names, so the PAM50 column is "pam50_._claudin.low_subtype"
+## Preprocessing
+#split columns: mutation / clinical / gene
 pam50_col <- "pam50_._claudin.low_subtype"
 
 cols_mutation <- names(df)[grepl("_mut$", names(df), ignore.case = TRUE)]
@@ -67,7 +31,7 @@ numeric_col <- sapply(df, is.numeric)
 cols_gene <- setdiff(names(df)[numeric_col], c(cols_clinical, cols_mutation))
 cat("Gene columns:", length(cols_gene), "\n")   # expected: 489
 
-# ---- [R] expression matrix (samples x genes) and clinical matrix ----
+# expression matrix (samples x genes) and clinical matrix
 id_sample <- if ("patient_id" %in% names(df)) "patient_id" else names(df)[1]
 
 df_expr <- df[, cols_gene]
@@ -76,11 +40,11 @@ rownames(df_expr) <- df[[id_sample]]
 df_clinical <- df[, intersect(cols_clinical, names(df))]
 rownames(df_clinical) <- df[[id_sample]]
 
-# ---- [R] data quality check ----
+# data quality check
 gsg <- goodSamplesGenes(df_expr, verbose = 3)
 gsg$allOK
 
-# ---- [R] choose soft-thresholding power ----
+# choose soft-thresholding power
 sft <- pickSoftThreshold(df_expr, powerVector = 1:20, verbose = 5)
 
 plot(sft$fitIndices[, 1], -sign(sft$fitIndices[, 3]) * sft$fitIndices[, 2],
@@ -92,7 +56,8 @@ soft_power <- sft$powerEstimate
 cat("Chosen power:", soft_power, "\n")
 stopifnot(!is.na(soft_power))   # NA means no power reached the fit threshold; pick one by hand
 
-# ---- [R] build modules ----
+## Running
+# build modules
 net <- blockwiseModules(
   df_expr,
   power = soft_power,
@@ -109,11 +74,11 @@ net <- blockwiseModules(
 moduleColors <- labels2colors(net$colors)
 table(moduleColors)
 
-# ---- [R] export gene -> module table (this is what Python reads) ----
+## export gene -> module table (this is what Python will read)
 gene_module_df <- data.frame(gene = colnames(df_expr), module = moduleColors)
 write.csv(gene_module_df, "/content/metabric_gene_modules_R.csv", row.names = FALSE)
 
-# ---- [R] module-trait relationship (used to justify the 4 modules below) ----
+# module-trait relationship (used to justify the 4 modules below)
 # Drop "NC" samples. Eigengenes are recomputed on the filtered samples
 # so rows of MEs and of the trait table match exactly.
 df_clinical_filter <- df_clinical[df_clinical[[pam50_col]] != "NC", ]
@@ -135,6 +100,7 @@ moduleTraitPvalue <- corPvalueStudent(moduleTraitCor, nrow(df_expr_filtered))
 textMatrix <- paste(signif(moduleTraitCor, 2), "\n(", signif(moduleTraitPvalue, 1), ")", sep = "")
 dim(textMatrix) <- dim(moduleTraitCor)
 
+## Visualization
 png("/content/module_trait_relationship.png", width = 1800, height = 1100, res = 150)
 par(mar = c(14, 8.5, 3, 3))
 labeledHeatmap(
@@ -370,34 +336,244 @@ behaves when samples are scarce, 42 samples were drawn at random
 features. Three models were evaluated with **leave-one-out
 cross-validation (LOO)**.
 
-```python
-RF  = RandomForestClassifier(n_estimators=100, max_depth=None,
-                             class_weight="balanced", random_state=42)
-XGB = XGBClassifier(n_estimators=100, max_depth=3, learning_rate=0.1,
-                    scale_pos_weight=36 / 6, eval_metric="logloss",
-                    tree_method="hist", random_state=42)
-SVM = Pipeline([("scale", StandardScaler()),
-                ("svc", SVC(kernel="rbf", C=1, class_weight="balanced"))])
-```
+# Mount drive
+"""
 
-Hyperparameters were fixed rather than tuned, because tuning inside LOO
-multiplies the number of model fits (about 7x) and overfits easily on
-42 samples. Balanced accuracy was used because the classes are
-imbalanced (accuracy alone would reward predicting "non-Basal" every
-time). Sensitivity and specificity were taken from the LOO predictions.
+from google.colab import drive
+drive.mount('/content/drive')
 
-Significance was assessed with a **permutation test**: labels were
-shuffled 50 times, and each shuffle went through the same LOO procedure
-to build a chance distribution. The p-value is
-(1 + number of shuffles scoring at least the observed value) / 51, so
-the smallest possible value is 0.0196. Robustness was checked by
-redrawing the 6 vs 36 subsample with 10 different seeds.
+"""# Import Libraries"""
 
-For interpretation, RF and XGBoost were fitted on all 42 samples and
-explained with SHAP (TreeExplainer), using mean |SHAP| for the Basal
-class. Genes in the top 15 of both models formed the consensus list. The
-SVM was left out because it was unstable across seeds. Since mean |SHAP|
-has no sign, direction was checked separately as the mean z-score
-difference (Basal minus non-Basal) on the same 42 samples. SHAP explains
-the model fitted on all 42 samples, so it describes what the model uses,
-not how well it generalises.
+import re
+import numpy as np
+import pandas as pd
+import shap
+from joblib import Parallel, delayed
+from sklearn.base import clone
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import balanced_accuracy_score
+from sklearn.model_selection import GridSearchCV, LeaveOneOut, StratifiedKFold, cross_val_predict
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.svm import SVC
+from xgboost import XGBClassifier
+from sklearn.metrics import confusion_matrix
+
+"""## determine values"""
+
+BASE_DIR = "/content/drive/My Drive/Latihan WGCNA/"
+TARGET_CLASS = "Basal" # to differ"Basal" vs "non-Basal"
+RANDOM_STATE = 42
+N_MINORITY, N_MAJORITY = 6, 36 # samples drawn 6 Basal vs 36 non-Basal, to reflect the actual research
+N_PERM = 50 # # label shuffles used to build the "chance" score distribution; min p-value = 1/51
+TOP_K_SHAP = 15 # per model, keep the 15 genes with the highest mean |SHAP| for the consensus list
+
+"""# Load Files"""
+
+pam50_col = "pam50_+_claudin-low_subtype"
+df = pd.read_csv(BASE_DIR + "METABRIC_RNA_Mutation.csv", low_memory=False)
+df_gene_module = pd.read_csv(BASE_DIR + "metabric_gene_modules_R.csv")
+overlap = pd.read_csv(BASE_DIR + "deg_wgcna_overlap.csv")   # DataFrame (gene, module): keep it a table
+
+def restore_gene_names(r_names, original_columns):
+    lookup = {}
+    for col in original_columns:
+        r_name = re.sub(r"[^A-Za-z0-9._]", ".", col)
+        if not re.match(r"^([A-Za-z]|\.(?![0-9]))", r_name):
+            r_name = "X" + r_name
+        lookup[r_name] = col
+    return [lookup.get(g, g) for g in r_names]
+
+# Bug Fix
+df_gene_module["gene"] = restore_gene_names(df_gene_module["gene"], df.columns)
+overlap["gene"] = restore_gene_names(overlap["gene"], df.columns)
+for tbl_name, tbl in [("gene_modules", df_gene_module), ("overlap", overlap)]:
+    unmatched = [g for g in tbl["gene"] if g not in df.columns]
+    assert not unmatched, f"{tbl_name}: gene names not found in the data: {unmatched}"
+
+cols_gene_all = df_gene_module["gene"].tolist()
+
+cols_gene_all[:489]
+
+overlap_genes = overlap["gene"].drop_duplicates().tolist()  # ML features (DEG ∩ WGCNA)
+assert set(overlap_genes) <= set(cols_gene_all), "overlap has genes outside the WGCNA table"
+
+# Rebuild df_ml exactly as in step 2 (same filter, same row order).
+df_ml = df[df[pam50_col].isin(["Basal", "LumA", "LumB", "Her2", "Normal"])].copy()
+df_ml = df_ml.dropna(subset=cols_gene_all + [pam50_col])
+print("df_ml:", df_ml.shape[0], "| overlap genes:", len(overlap_genes))
+
+"""# Balanced sub sample"""
+
+is_target = df_ml[pam50_col] == TARGET_CLASS
+assert is_target.sum() >= N_MINORITY and (~is_target).sum() >= N_MAJORITY, "not enough samples per class"
+
+idx = np.concatenate([
+    df_ml[is_target].sample(n=N_MINORITY, random_state=RANDOM_STATE).index,
+    df_ml[~is_target].sample(n=N_MAJORITY, random_state=RANDOM_STATE).index,
+])
+df_42 = df_ml.loc[idx]
+X = df_42[overlap_genes].to_numpy(dtype=float)     # numpy: avoids feature-name warnings in the SVM pipeline
+y = (df_42[pam50_col] == TARGET_CLASS).astype(int).to_numpy()
+print("n =", len(y), "| Basal:", y.sum(), "| non-Basal:", (1 - y).sum(), "| features:", X.shape[1])
+
+"""# models + inner tuning"""
+
+def make_search(estimator, grid):
+    """One shared inner CV for every model, so tuning is identical and scores are comparable."""
+    inner = StratifiedKFold(n_splits=3, shuffle=True, random_state=RANDOM_STATE)
+    return GridSearchCV(estimator, grid, cv=inner, scoring="balanced_accuracy", n_jobs=1)
+
+# ---- 4.2 models with FIXED hyperparameters (no inner tuning) ----
+# Reason: tuning inside LOO costs ~7x more fits and overfits easily on n=42.
+searches = {
+    "RF": RandomForestClassifier(n_estimators=100, max_depth=None, class_weight="balanced",
+                                 random_state=RANDOM_STATE, n_jobs=1),
+    "XGB": XGBClassifier(n_estimators=100, max_depth=3, learning_rate=0.1,
+                         scale_pos_weight=N_MAJORITY / N_MINORITY, eval_metric="logloss",
+                         tree_method="hist", n_jobs=1, random_state=RANDOM_STATE, verbosity=0),
+    "SVM": Pipeline([("scale", StandardScaler()),
+                     ("svc", SVC(kernel="rbf", C=1, class_weight="balanced"))]),
+}
+
+"""# nested LOO + permutation test
+
+"""
+
+def nested_loo_score(search, X, y, n_jobs=1):
+    """Outer LOO, inner CV tuning. A function so the real labels and every permuted
+    labelling go through the exact same procedure (otherwise the null is not comparable)."""
+    pred = cross_val_predict(clone(search), X, y, cv=LeaveOneOut(), n_jobs=n_jobs)
+    return balanced_accuracy_score(y, pred)
+
+def one_permutation(search, X, y, seed):
+    """Top-level function (not a lambda) so joblib can pickle it; seed makes it reproducible."""
+    y_perm = np.random.RandomState(seed).permutation(y)
+    return nested_loo_score(search, X, y_perm, n_jobs=1)
+
+def permutation_null(search, X, y, n_perm):
+    """Parallelise over permutations (few big jobs) instead of over LOO folds (many tiny jobs)."""
+    seeds = np.random.RandomState(RANDOM_STATE).randint(0, 2**31 - 1, size=n_perm)
+    return np.array(Parallel(n_jobs=-1)(delayed(one_permutation)(search, X, y, s) for s in seeds))
+
+rows = []
+for name, search in searches.items():
+    obs = nested_loo_score(search, X, y, n_jobs=-1)
+    null = permutation_null(search, X, y, N_PERM)
+    p_val = (1 + np.sum(null >= obs)) / (N_PERM + 1)    # +1: a permutation p-value is never exactly 0
+    rows.append({"model": name, "balanced_accuracy": round(obs, 3),
+                 "null_mean": round(null.mean(), 3), "null_std": round(null.std(), 3),
+                 "p_perm": round(p_val, 4), "n_perm": N_PERM,
+                 "n_samples": len(y), "n_features": X.shape[1]})
+    print(rows[-1])
+
+results = pd.DataFrame(rows)
+results.to_csv(BASE_DIR + "ml_n42_results.csv", index=False)
+print(results)
+
+def loo_confusion(model, X, y):
+    """LOO predictions -> sensitivity/specificity; a function so all models report identically."""
+    pred = cross_val_predict(clone(model), X, y, cv=LeaveOneOut(), n_jobs=-1)
+    tn, fp, fn, tp = confusion_matrix(y, pred).ravel()
+    return {"TP": tp, "FN": fn, "TN": tn, "FP": fp,
+            "sens": round(tp / (tp + fn), 3), "spec": round(tn / (tn + fp), 3)}
+
+for name, m in searches.items():
+    print(name, loo_confusion(m, X, y))
+
+def subsample_score(model, seed):
+    """Redraw the 6 vs 36 subsample with a new seed; a function so every seed runs identical steps."""
+    idx = np.concatenate([
+        df_ml[is_target].sample(n=N_MINORITY, random_state=seed).index,
+        df_ml[~is_target].sample(n=N_MAJORITY, random_state=seed).index])
+    Xs = df_ml.loc[idx, overlap_genes].to_numpy(dtype=float)
+    ys = (df_ml.loc[idx, pam50_col] == TARGET_CLASS).astype(int).to_numpy()
+    return nested_loo_score(model, Xs, ys, n_jobs=-1)
+
+seeds = range(10)
+stab = pd.DataFrame({n: [subsample_score(m, s) for s in seeds] for n, m in searches.items()},
+                    index=list(seeds))
+print(stab.round(3))
+print(stab.agg(["mean", "std"]).round(3))
+
+"""# SHAP"""
+
+SHAP_MODELS = ["RF", "XGB"]   # SVM skipped: unstable across seeds, KernelExplainer is slow
+
+def class1_shap(sv):
+    """Return an (n_samples, n_features) array for the positive class. A function because
+    shap gives a list, a 3-D array or a 2-D array depending on version and model."""
+    if isinstance(sv, list):
+        return np.asarray(sv[1])
+    sv = np.asarray(sv)
+    return sv[:, :, 1] if sv.ndim == 3 else sv
+
+def shap_importance(model, X, y, genes):
+    """Fit on all 42 samples and return mean |SHAP| per gene. A function so RF and XGB
+    share one path; no tuning object here, so the fixed-hyperparameter model is fitted directly."""
+    fitted = clone(model).fit(X, y)
+    sv = class1_shap(shap.TreeExplainer(fitted).shap_values(X))
+    out = pd.DataFrame({"gene": genes, "mean_abs_shap": np.abs(sv).mean(axis=0)})
+    return out.sort_values("mean_abs_shap", ascending=False).reset_index(drop=True)
+
+importances = {}
+for name in SHAP_MODELS:
+    importances[name] = shap_importance(searches[name], X, y, overlap_genes)
+    importances[name].to_csv(BASE_DIR + f"shap_importance_{name}.csv", index=False)
+    print(name, "top genes:", importances[name]["gene"].head(5).tolist())
+
+# consensus: genes in the top-K of ALL SHAP models (RF and XGB)
+models = list(importances)
+rank_df = pd.DataFrame({m: importances[m].set_index("gene")["mean_abs_shap"].rank(ascending=False)
+                        for m in models})
+rank_df["n_models_topk"] = (rank_df[models] <= TOP_K_SHAP).sum(axis=1)
+rank_df["mean_rank"] = rank_df[models].mean(axis=1)
+consensus = (rank_df[rank_df["n_models_topk"] == len(models)]
+             .sort_values("mean_rank")
+             .rename_axis("gene").reset_index())
+consensus.to_csv(BASE_DIR + "shap_consensus_genes.csv", index=False)
+print(consensus)
+
+# Direction check on the 42 samples: positive = higher in Basal. Needed because mean |SHAP| has no sign.
+cons_genes = consensus["gene"].tolist()
+diff = (df_42[cons_genes][y == 1].mean() - df_42[cons_genes][y == 0].mean()).round(2)
+print(diff.sort_values())
+
+import matplotlib.pyplot as plt
+from matplotlib.patches import Patch
+
+def get_shap_values(model, X, y):
+    """Fit on all 42 samples and return class-1 (Basal) SHAP values; a function so the bar
+    plot and the beeswarm reuse one fit instead of refitting."""
+    fitted = clone(model).fit(X, y)
+    return class1_shap(shap.TreeExplainer(fitted).shap_values(X))
+
+sv_all = {n: get_shap_values(searches[n], X, y) for n in SHAP_MODELS}
+
+# direction per gene: mean expression Basal minus rest (positive = higher in Basal)
+diff_all = pd.Series(X[y == 1].mean(axis=0) - X[y == 0].mean(axis=0), index=overlap_genes)
+
+
+def shap_bar(sv, genes, diff, title, ax, top_k=15):
+    """Bar of mean |SHAP| coloured by direction; a function so RF and XGB share identical styling."""
+    imp = pd.Series(np.abs(sv).mean(axis=0), index=genes).nlargest(top_k)[::-1]
+    colors = ["#d62728" if diff[g] > 0 else "#1f77b4" for g in imp.index]
+    ax.barh(imp.index, imp.values, color=colors)
+    ax.set_xlabel("mean(|SHAP value|)")
+    ax.set_title(title)
+
+
+fig, axes = plt.subplots(1, 2, figsize=(11, 6))
+for ax, n in zip(axes, SHAP_MODELS):
+    shap_bar(sv_all[n], overlap_genes, diff_all, f"{n}: Basal vs non-Basal", ax)
+axes[1].legend(handles=[Patch(color="#d62728", label="higher in Basal"),
+                        Patch(color="#1f77b4", label="lower in Basal")], loc="lower right")
+plt.tight_layout()
+plt.savefig(BASE_DIR + "shap_bar_basal_vs_rest.png", dpi=300)
+plt.show()
+
+# beeswarm: dot colour = expression level, x = push toward Basal; direction is read directly
+shap.summary_plot(sv_all["RF"], X, feature_names=overlap_genes, max_display=15, show=False)
+plt.tight_layout()
+plt.savefig(BASE_DIR + "shap_beeswarm_rf.png", dpi=300)
+plt.show()
