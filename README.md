@@ -50,7 +50,7 @@ Run the steps in order. Step 1 runs once, globally, on all samples.
 
 METABRIC expression and clinical data ( (Pereira et al., 2016, *Nature*), 
 accessed through a Kaggle re-upload. Download `METABRIC_RNA_Mutation.csv` 
-yourself from this link ![Kaggle](https://www.kaggle.com/datasets/raghadalharbi/breast-cancer-gene-expression-profiles-metabric) and place it in `data/input/`. The PAM50 label used for classification is the column
+yourself from this link [Kaggle](https://www.kaggle.com/datasets/raghadalharbi/breast-cancer-gene-expression-profiles-metabric) and place it in `data/input/`. The PAM50 label used for classification is the column
 `pam50_+_claudin-low_subtype`.
 
 ## Requirements
