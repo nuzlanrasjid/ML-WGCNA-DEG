@@ -120,25 +120,19 @@ write.csv(data.frame(module = rownames(moduleTraitPvalue), moduleTraitPvalue),
 # >>> NOW: download /content/metabric_gene_modules_R.csv and upload it to
 # >>> Drive/Latihan WGCNA/, then switch to the Python runtime.
 
-
-################################################################################
-# STEP 2 -- [PYTHON RUNTIME] DGE Basal vs non-Basal    (ALREADY RUN)
-# Input : Drive/Latihan WGCNA/METABRIC_RNA_Mutation.csv
-# Output: dge_basal_vs_rest_all.csv, dge_basal_vs_rest_significant.csv,
-#         dge_volcano_basal.png, dge_heatmap_subtype_mean.png
-################################################################################
-
-# ---- [PYTHON] mount Drive + install (once per runtime) ----
+# STEP 2 -- [PYTHON RUNTIME] DGE Basal vs non-Basal
+# mount Drive
 from google.colab import drive
 drive.mount('/content/drive')
-# !pip install -q shap        # uncomment once; xgboost is preinstalled on Colab
+# !pip install -q shap        
 
-# ---- [PYTHON] imports ----
+# import libraries
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from scipy import stats
+import re
 from statsmodels.stats.multitest import multipletests
 from joblib import Parallel, delayed
 from sklearn.base import clone
@@ -151,7 +145,7 @@ from sklearn.svm import SVC
 from xgboost import XGBClassifier
 import shap
 
-# ---- [PYTHON] config: every threshold in one place ----
+# every threshold in one place
 BASE_DIR = "/content/drive/My Drive/Latihan WGCNA/"
 TARGET_CLASS = "Basal"
 RANDOM_STATE = 42
@@ -164,21 +158,13 @@ N_MINORITY, N_MAJORITY = 6, 36                          # n=42, mimics the rice 
 N_PERM = 50                                             # permutations per model (raise to 100+ if time allows)
 TOP_K_SHAP = 15                                         # top genes per model for the consensus list
 
-# ---- [PYTHON] load data ----
-# MISMATCH ENTERS HERE: df_gene_module has R-style gene names ('hla.g'), df has the
-# original headers ('hla-g'). Both tables are loaded as-is; the names are reconciled
-# right below with restore_gene_names().
+# load data
 df_gene_module = pd.read_csv(BASE_DIR + "metabric_gene_modules_R.csv")
 df = pd.read_csv(BASE_DIR + "METABRIC_RNA_Mutation.csv", low_memory=False)
 print(df_gene_module.shape, df.shape)
 
-import re
 
 def restore_gene_names(r_names, original_columns):
-    """R's read.csv rewrites column names (make.names): 'hla-g' -> 'hla.g', '3x' -> 'X3x'.
-    Map the names in the WGCNA table back to the original CSV headers. A function because
-    it is needed here (step 2/3) and again in the standalone step 4.0. Without it, genes with
-    rewritten names silently fail to match in the DEG x WGCNA intersection."""
     lookup = {}
     for col in original_columns:
         r_name = re.sub(r"[^A-Za-z0-9._]", ".", col)
@@ -224,11 +210,8 @@ df_ml = df_ml.dropna(subset=cols_gene_all + [pam50_col])   # DGE needs complete 
 print(df_ml[pam50_col].value_counts())
 print("Samples after NA removal:", df_ml.shape[0])       # earlier run: 1,699
 
-# ---- [PYTHON] DGE ----
-# Mann-Whitney is the main test (z-scores are not guaranteed normal); Welch t-test
-# is reported alongside. DESeq2/limma-voom are not used: they need raw counts, and
-# METABRIC values are already z-scores, so log2FC is undefined and the raw mean
-# difference is the effect size.
+# Running DGE 
+# Mann-Whitney is the main test (z-scores are not guaranteed normal);
 is_basal = df_ml[pam50_col] == TARGET_CLASS
 group_basal = df_ml.loc[is_basal, cols_gene_all]
 group_rest = df_ml.loc[~is_basal, cols_gene_all]
@@ -262,7 +245,8 @@ print(deg_significant[["gene", "mean_diff_zscore", "p_mannwhitney"]].head(10))
 dge_result.to_csv(BASE_DIR + "dge_basal_vs_rest_all.csv", index=False)
 deg_significant.to_csv(BASE_DIR + "dge_basal_vs_rest_significant.csv", index=False)
 
-# ---- [PYTHON] volcano plot ----
+## Visualization
+# volcano plot
 dp = dge_result.copy()
 dp["neglog10_padj"] = -np.log10(dp["padj_mannwhitney"].replace(0, 1e-300))
 is_sig = (dp["padj_mannwhitney"] < SIG_PADJ) & (dp["mean_diff_zscore"].abs() > MIN_EFFECT)
@@ -293,9 +277,7 @@ plt.tight_layout()
 plt.savefig(BASE_DIR + "dge_volcano_basal.png", dpi=150, bbox_inches="tight")
 plt.show()
 
-# ---- [PYTHON] heatmap: mean expression per subtype for the top DEGs ----
-# One column per subtype (not 1,699 samples) so it stays readable and shows
-# whether a gene is Basal-specific or shifts in other subtypes too.
+# heatmap: mean expression per subtype for the top DEGs
 top_genes = deg_significant.head(30)["gene"].tolist()
 mean_by_subtype = df_ml.groupby(pam50_col)[top_genes].mean().T[["Basal", "Her2", "LumB", "LumA", "Normal"]]
 cm = sns.clustermap(mean_by_subtype, col_cluster=False, row_cluster=True,
@@ -306,14 +288,12 @@ cm.savefig(BASE_DIR + "dge_heatmap_subtype_mean.png", dpi=150, bbox_inches="tigh
 plt.show()
 
 
-################################################################################
-# STEP 3 -- [PYTHON RUNTIME] Intersection DEG x WGCNA modules   (ALREADY RUN)
+# STEP 3 -- [PYTHON RUNTIME] Intersection DEG x WGCNA modules
 # Output: deg_wgcna_overlap.csv, deg_wgcna_genes_for_ml.csv
-################################################################################
 
 wgcna_module_genes = df_gene_module[df_gene_module["module"].isin(MODULES_SELECTED)]
 # SILENT MISS (before the fix): isin() compares WGCNA names (R-style, 'hla.g') with DEG
-# names (original, 'hla-g'). No error is raised, the gene is simply not matched and
+
 # drops out of the intersection. It is safe now because step 2 restored the names.
 overlap = wgcna_module_genes[wgcna_module_genes["gene"].isin(set(deg_significant["gene"]))]
 
@@ -321,29 +301,24 @@ print(f"Genes in selected WGCNA modules: {len(wgcna_module_genes)}")   # earlier
 print(f"Significant DEG: {len(deg_significant)}")                      # earlier run: 165
 print(f"Intersection: {len(overlap)}")                                 # earlier run: 79, BEFORE the name fix -> expect >= 79 now
 # RE-RUN this step after the fix: the saved deg_wgcna_overlap.csv still lacks the
-# genes whose names R had rewritten (hyphenated names such as hla-g).
 print(overlap["module"].value_counts())
 
 overlap[["gene", "module"]].to_csv(BASE_DIR + "deg_wgcna_overlap.csv", index=False)
 overlap[["gene"]].to_csv(BASE_DIR + "deg_wgcna_genes_for_ml.csv", index=False)
 
-
-################################################################################
-# STEP 4 -- [PYTHON RUNTIME] ML on the overlap genes, n=42 [MULAI DARI SINIIIIIIIIIII]
-**4. Machine learning on a small sample.** To test how the approach
-behaves when samples are scarce, 42 samples were drawn at random
-(seed 42): 6 Basal and 36 non-Basal. The 79 overlap genes were used as
-features. Three models were evaluated with **leave-one-out
-cross-validation (LOO)**.
+# STEP 4 -- [PYTHON RUNTIME] ML on the overlap genes, n=42
+#**4. Machine learning on a small sample.** To test how the approach
+# behaves when samples are scarce, 42 samples were drawn at random
+# (seed 42): 6 Basal and 36 non-Basal. The 79 overlap genes were used as
+# features. Three models were evaluated with **leave-one-out
+# cross-validation (LOO)**.
 
 # Mount drive
-"""
 
 from google.colab import drive
 drive.mount('/content/drive')
 
-"""# Import Libraries"""
-
+# Import Libraries
 import re
 import numpy as np
 import pandas as pd
@@ -359,17 +334,15 @@ from sklearn.svm import SVC
 from xgboost import XGBClassifier
 from sklearn.metrics import confusion_matrix
 
-"""## determine values"""
-
+## determine values
 BASE_DIR = "/content/drive/My Drive/Latihan WGCNA/"
 TARGET_CLASS = "Basal" # to differ"Basal" vs "non-Basal"
 RANDOM_STATE = 42
-N_MINORITY, N_MAJORITY = 6, 36 # samples drawn 6 Basal vs 36 non-Basal, to reflect the actual research
+N_MINORITY, N_MAJORITY = 6, 36 # samples drawn 6 Basal vs 36 non-Basal, to reflect the actual research (soon)
 N_PERM = 50 # # label shuffles used to build the "chance" score distribution; min p-value = 1/51
 TOP_K_SHAP = 15 # per model, keep the 15 genes with the highest mean |SHAP| for the consensus list
 
-"""# Load Files"""
-
+## Load Files
 pam50_col = "pam50_+_claudin-low_subtype"
 df = pd.read_csv(BASE_DIR + "METABRIC_RNA_Mutation.csv", low_memory=False)
 df_gene_module = pd.read_csv(BASE_DIR + "metabric_gene_modules_R.csv")
@@ -403,8 +376,7 @@ df_ml = df[df[pam50_col].isin(["Basal", "LumA", "LumB", "Her2", "Normal"])].copy
 df_ml = df_ml.dropna(subset=cols_gene_all + [pam50_col])
 print("df_ml:", df_ml.shape[0], "| overlap genes:", len(overlap_genes))
 
-"""# Balanced sub sample"""
-
+# Balanced sub sample
 is_target = df_ml[pam50_col] == TARGET_CLASS
 assert is_target.sum() >= N_MINORITY and (~is_target).sum() >= N_MAJORITY, "not enough samples per class"
 
@@ -417,14 +389,7 @@ X = df_42[overlap_genes].to_numpy(dtype=float)     # numpy: avoids feature-name 
 y = (df_42[pam50_col] == TARGET_CLASS).astype(int).to_numpy()
 print("n =", len(y), "| Basal:", y.sum(), "| non-Basal:", (1 - y).sum(), "| features:", X.shape[1])
 
-"""# models + inner tuning"""
-
-def make_search(estimator, grid):
-    """One shared inner CV for every model, so tuning is identical and scores are comparable."""
-    inner = StratifiedKFold(n_splits=3, shuffle=True, random_state=RANDOM_STATE)
-    return GridSearchCV(estimator, grid, cv=inner, scoring="balanced_accuracy", n_jobs=1)
-
-# ---- 4.2 models with FIXED hyperparameters (no inner tuning) ----
+# models with FIXED hyperparameters
 # Reason: tuning inside LOO costs ~7x more fits and overfits easily on n=42.
 searches = {
     "RF": RandomForestClassifier(n_estimators=100, max_depth=None, class_weight="balanced",
@@ -436,10 +401,7 @@ searches = {
                      ("svc", SVC(kernel="rbf", C=1, class_weight="balanced"))]),
 }
 
-"""# nested LOO + permutation test
-
-"""
-
+# nested LOO + permutation test
 def nested_loo_score(search, X, y, n_jobs=1):
     """Outer LOO, inner CV tuning. A function so the real labels and every permuted
     labelling go through the exact same procedure (otherwise the null is not comparable)."""
@@ -482,7 +444,6 @@ for name, m in searches.items():
     print(name, loo_confusion(m, X, y))
 
 def subsample_score(model, seed):
-    """Redraw the 6 vs 36 subsample with a new seed; a function so every seed runs identical steps."""
     idx = np.concatenate([
         df_ml[is_target].sample(n=N_MINORITY, random_state=seed).index,
         df_ml[~is_target].sample(n=N_MAJORITY, random_state=seed).index])
@@ -496,7 +457,7 @@ stab = pd.DataFrame({n: [subsample_score(m, s) for s in seeds] for n, m in searc
 print(stab.round(3))
 print(stab.agg(["mean", "std"]).round(3))
 
-"""# SHAP"""
+# SHAP
 
 SHAP_MODELS = ["RF", "XGB"]   # SVM skipped: unstable across seeds, KernelExplainer is slow
 
@@ -534,11 +495,12 @@ consensus = (rank_df[rank_df["n_models_topk"] == len(models)]
 consensus.to_csv(BASE_DIR + "shap_consensus_genes.csv", index=False)
 print(consensus)
 
-# Direction check on the 42 samples: positive = higher in Basal. Needed because mean |SHAP| has no sign.
+# Direction check on the 42 samples: positive = higher in Basal.
 cons_genes = consensus["gene"].tolist()
 diff = (df_42[cons_genes][y == 1].mean() - df_42[cons_genes][y == 0].mean()).round(2)
 print(diff.sort_values())
 
+# Visualization
 import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
 
